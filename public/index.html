@@ -12,10 +12,12 @@
         label { display: block; font-weight: bold; margin-bottom: 0.25rem; }
         input, textarea, select { width: 100%; padding: 0.5rem; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
         button { background: #007bff; color: white; border: none; padding: 0.5rem 1rem; border-radius: 4px; cursor: pointer; }
-        button:hover { background: #0056b3; }
+        button:hover:not(:disabled) { background: #0056b3; }
+        button:disabled { background: #6c757d; cursor: not-allowed; }
         .error { color: red; margin-top: 0.5rem; }
         .success { color: green; margin-top: 0.5rem; }
         .note { font-size: 0.8rem; color: gray; margin-top: 1rem; }
+        .warning-note { background: #fff3cd; border: 1px solid #ffeeba; padding: 0.5rem; border-radius: 4px; margin-top: 0.5rem; font-size: 0.85rem; }
     </style>
 </head>
 <body>
@@ -49,7 +51,10 @@
             <label>ymmeファイル</label>
             <input type="file" id="ymmeFile" accept=".ymme" required>
         </div>
-        <button type="submit">🚀 アップロードして反映</button>
+        <button type="submit" id="submitBtn">🚀 アップロードして反映</button>
+        <div class="warning-note">
+            ※ 大人数が同時にアップロードすると一時的にエラーになることがあります。失敗した場合は1〜2分ほど時間を空けて再度お試しください。
+        </div>
         <div id="message"></div>
         <div class="note">
             ※ アップロード後、GitHubリポジトリの update.xml と plugins/ フォルダが更新されます。<br>
@@ -60,13 +65,22 @@
 <script>
     const form = document.getElementById('uploadForm');
     const msgDiv = document.getElementById('message');
+    const submitBtn = document.getElementById('submitBtn');
+    const adminPasswordInput = document.getElementById('adminPassword');
+
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const adminPassword = document.getElementById('adminPassword').value;
+        const adminPassword = adminPasswordInput.value;
         if (!adminPassword) {
             msgDiv.innerHTML = '<div class="error">管理者パスワードを入力してください</div>';
             return;
         }
+
+        // ボタンを無効化（連打防止）
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'アップロード中...';
+        msgDiv.innerHTML = '<div>アップロード中...</div>';
+
         const formData = new FormData();
         formData.append('pluginName', document.getElementById('pluginName').value);
         formData.append('version', document.getElementById('version').value);
@@ -74,7 +88,6 @@
         formData.append('force', document.getElementById('force').value);
         formData.append('ymmeFile', document.getElementById('ymmeFile').files[0]);
 
-        msgDiv.innerHTML = '<div>アップロード中...</div>';
         try {
             const res = await fetch('/api/upload', {
                 method: 'POST',
@@ -85,12 +98,16 @@
             if (res.ok) {
                 msgDiv.innerHTML = '<div class="success">✅ アップロード成功！ update.xml が更新されました。</div>';
                 form.reset();
-                document.getElementById('adminPassword').value = '';
+                adminPasswordInput.value = ''; // パスワードもクリア
             } else {
                 msgDiv.innerHTML = `<div class="error">エラー: ${data.error || '不明なエラー'}</div>`;
             }
         } catch (err) {
             msgDiv.innerHTML = `<div class="error">通信エラー: ${err.message}</div>`;
+        } finally {
+            // ボタンを再有効化（成功・失敗どちらでも）
+            submitBtn.disabled = false;
+            submitBtn.textContent = '🚀 アップロードして反映';
         }
     });
 </script>
