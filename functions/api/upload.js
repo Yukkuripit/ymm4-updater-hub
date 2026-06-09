@@ -1,4 +1,3 @@
-// functions/api/upload.js
 export async function onRequest(context) {
   const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
