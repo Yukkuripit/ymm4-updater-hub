@@ -14,12 +14,11 @@ export async function onRequest(context) {
     return new Response('Method not allowed', { status: 405, headers: corsHeaders });
   }
 
-  // 簡易パスワード認証 (管理画面からのAuthorizationヘッダーをパース)
+  // 簡易パスワード認証
   const authHeader = context.request.headers.get('Authorization');
   const password = authHeader?.split(' ')[1];
   const validPassword = context.env.ADMIN_PASSWORD;
   if (!validPassword || password !== validPassword) {
-    console.error(`Auth failed: provided password length = ${password?.length || 0}`);
     return new Response('Unauthorized', { status: 401, headers: corsHeaders });
   }
 
@@ -45,9 +44,6 @@ export async function onRequest(context) {
   const repoName = context.env.GITHUB_REPO_NAME;
   const branch = 'main';
 
-  // デバッグ: 環境変数が正しく読み込まれているか確認 (ログ出力)
-  console.error(`GitHub config: owner=${repoOwner}, repo=${repoName}, token prefix=${githubToken?.substring(0, 4)}...`);
-
   if (!githubToken || !repoOwner || !repoName) {
     return new Response(JSON.stringify({ error: 'GitHub settings missing' }), {
       status: 500,
@@ -57,7 +53,6 @@ export async function onRequest(context) {
 
   // ヘルパー: 文字列を Base64 に変換 (Buffer 不使用)
   function toBase64(str) {
-    // UTF-8 を正しく扱うために TextEncoder を使用
     const encoder = new TextEncoder();
     const bytes = encoder.encode(str);
     let binary = '';
@@ -77,7 +72,7 @@ export async function onRequest(context) {
     return decoder.decode(bytes);
   }
 
-  // ファイルを ArrayBuffer → Base64 に変換
+  // ファイルを ArrayBuffer → Base64
   async function fileToBase64(file) {
     const buffer = await file.arrayBuffer();
     const bytes = new Uint8Array(buffer);
@@ -88,31 +83,27 @@ export async function onRequest(context) {
     return btoa(binary);
   }
 
-  // GitHub API 呼び出し (User-Agent必須、認証ヘッダーは `token` 形式を使用)
-  async function callGitHubAPI(url, method, body = null, extraHeaders = {}) {
+  // GitHub API 呼び出し (User-Agent必須)
+  async function callGitHubAPI(url, method, body = null) {
     const headers = {
-      'Authorization': `token ${githubToken}`,  // ← 修正: Bearer → token
+      'Authorization': `token ${githubToken}`,
       'User-Agent': 'YMM4-AutoUpdater-Cloudflare',
-      'Accept': 'application/vnd.github.v3+json',
-      ...extraHeaders
+      'Accept': 'application/vnd.github.v3+json'
     };
     if (body) {
       headers['Content-Type'] = 'application/json';
     }
     const options = { method, headers };
     if (body) options.body = JSON.stringify(body);
-    
-    console.error(`GitHub API call: ${method} ${url}`);
     const res = await fetch(url, options);
     if (!res.ok) {
       const errorText = await res.text();
-      console.error(`GitHub API error ${res.status}: ${errorText}`);
       throw new Error(`GitHub API error ${res.status}: ${errorText}`);
     }
     return res.json();
   }
 
-  // ファイルのSHAを取得 (ファイルが存在しない場合は null)
+  // ファイルのSHAを取得 (存在しない場合は null)
   async function getFileSha(path) {
     const url = `https://api.github.com/repos/${repoOwner}/${repoName}/contents/${path}`;
     try {
@@ -138,13 +129,13 @@ export async function onRequest(context) {
   }
 
   try {
-    // 1. ymmeファイルをBase64変換してアップロード
+    // 1. ymmeファイルをアップロード
     const fileBase64 = await fileToBase64(ymmFile);
     const filePath = `plugins/${developerName}/${pluginName}_v${version}.ymme`;
     const rawYmmUrl = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/${branch}/${filePath}`;
     await commitFile(filePath, fileBase64, `Upload ${developerName}/${pluginName} v${version}`);
 
-    // 2. update.xml を更新 (開発者ごと、プラグインごとにフォルダ分け)
+    // 2. update.xml を更新
     const xmlPath = `updates/${developerName}/${pluginName}.xml`;
     let xmlContent = '';
     try {
@@ -156,11 +147,10 @@ export async function onRequest(context) {
         xmlContent = '<?xml version="1.0" encoding="UTF-8"?>\n<item>\n</item>';
       }
     } catch (err) {
-      console.error(`XML file not found, creating new: ${err.message}`);
       xmlContent = '<?xml version="1.0" encoding="UTF-8"?>\n<item>\n</item>';
     }
 
-    // 簡易XMLテキスト置換 (同じnameのtargetを置換)
+    // 簡易XMLテキスト置換
     const targetTag = `<target name="${pluginName}">`;
     const endTag = `</target>`;
     const newTarget = `<target name="${pluginName}">
@@ -175,13 +165,12 @@ export async function onRequest(context) {
       const endIdx = xmlContent.indexOf(endTag, startIdx) + endTag.length;
       xmlContent = xmlContent.substring(0, startIdx) + newTarget + xmlContent.substring(endIdx);
     } else {
-      xmlContent = xmlContent.replace('</item>', `  ${newTarget}\n</item>');
+      xmlContent = xmlContent.replace('</item>', `  ${newTarget}\n</item>`);
     }
 
     const xmlBase64 = toBase64(xmlContent);
     await commitFile(xmlPath, xmlBase64, `Update ${pluginName} to v${version}`);
 
-    // 公開用のURL (クライアントが参照するのはこのURL)
     const publicXmlUrl = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/${branch}/${xmlPath}`;
 
     return new Response(JSON.stringify({ success: true, message: 'Plugin updated', xmlUrl: publicXmlUrl }), {
@@ -189,7 +178,6 @@ export async function onRequest(context) {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   } catch (err) {
-    console.error(`Upload error: ${err.message}`);
     return new Response(JSON.stringify({ error: err.message }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
