@@ -14,11 +14,12 @@ export async function onRequest(context) {
     return new Response('Method not allowed', { status: 405, headers: corsHeaders });
   }
 
-  // 簡易パスワード認証
+  // 簡易パスワード認証 (管理画面からのAuthorizationヘッダーをパース)
   const authHeader = context.request.headers.get('Authorization');
   const password = authHeader?.split(' ')[1];
   const validPassword = context.env.ADMIN_PASSWORD;
   if (!validPassword || password !== validPassword) {
+    console.error(`Auth failed: provided password length = ${password?.length || 0}`);
     return new Response('Unauthorized', { status: 401, headers: corsHeaders });
   }
 
@@ -38,11 +39,15 @@ export async function onRequest(context) {
     });
   }
 
-  // GitHub設定
+  // GitHub設定 (環境変数から取得)
   const githubToken = context.env.GITHUB_TOKEN;
   const repoOwner = context.env.GITHUB_REPO_OWNER;
   const repoName = context.env.GITHUB_REPO_NAME;
   const branch = 'main';
+
+  // デバッグ: 環境変数が正しく読み込まれているか確認 (ログ出力)
+  console.error(`GitHub config: owner=${repoOwner}, repo=${repoName}, token prefix=${githubToken?.substring(0, 4)}...`);
+
   if (!githubToken || !repoOwner || !repoName) {
     return new Response(JSON.stringify({ error: 'GitHub settings missing' }), {
       status: 500,
@@ -52,10 +57,24 @@ export async function onRequest(context) {
 
   // ヘルパー: 文字列を Base64 に変換 (Buffer 不使用)
   function toBase64(str) {
-    return btoa(unescape(encodeURIComponent(str)));
+    // UTF-8 を正しく扱うために TextEncoder を使用
+    const encoder = new TextEncoder();
+    const bytes = encoder.encode(str);
+    let binary = '';
+    for (let i = 0; i < bytes.length; i++) {
+      binary += String.fromCharCode(bytes[i]);
+    }
+    return btoa(binary);
   }
+
   function fromBase64(base64) {
-    return decodeURIComponent(escape(atob(base64)));
+    const binary = atob(base64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    const decoder = new TextDecoder();
+    return decoder.decode(bytes);
   }
 
   // ファイルを ArrayBuffer → Base64 に変換
@@ -69,38 +88,37 @@ export async function onRequest(context) {
     return btoa(binary);
   }
 
-  // GitHub API 呼び出し (User-Agent必須)
-  async function callGitHubAPI(url, method, body = null, sha = null) {
+  // GitHub API 呼び出し (User-Agent必須、認証ヘッダーは `token` 形式を使用)
+  async function callGitHubAPI(url, method, body = null, extraHeaders = {}) {
     const headers = {
-      'Authorization': `Bearer ${githubToken}`,
+      'Authorization': `token ${githubToken}`,  // ← 修正: Bearer → token
       'User-Agent': 'YMM4-AutoUpdater-Cloudflare',
-      'Accept': 'application/vnd.github.v3+json'
+      'Accept': 'application/vnd.github.v3+json',
+      ...extraHeaders
     };
     if (body) {
       headers['Content-Type'] = 'application/json';
     }
-    let finalUrl = url;
-    if (sha && method === 'PUT') {
-      // 既存ファイルのSHAが必要
-    }
     const options = { method, headers };
     if (body) options.body = JSON.stringify(body);
-    const res = await fetch(finalUrl, options);
+    
+    console.error(`GitHub API call: ${method} ${url}`);
+    const res = await fetch(url, options);
     if (!res.ok) {
       const errorText = await res.text();
+      console.error(`GitHub API error ${res.status}: ${errorText}`);
       throw new Error(`GitHub API error ${res.status}: ${errorText}`);
     }
     return res.json();
   }
 
-  // ファイルのSHAを取得
+  // ファイルのSHAを取得 (ファイルが存在しない場合は null)
   async function getFileSha(path) {
     const url = `https://api.github.com/repos/${repoOwner}/${repoName}/contents/${path}`;
     try {
       const data = await callGitHubAPI(url, 'GET');
       return data.sha;
     } catch (err) {
-      // ファイルが存在しない場合は null
       if (err.message.includes('404')) return null;
       throw err;
     }
@@ -120,7 +138,7 @@ export async function onRequest(context) {
   }
 
   try {
-    // 1. ymmeファイルをBase64変換
+    // 1. ymmeファイルをBase64変換してアップロード
     const fileBase64 = await fileToBase64(ymmFile);
     const filePath = `plugins/${developerName}/${pluginName}_v${version}.ymme`;
     const rawYmmUrl = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/${branch}/${filePath}`;
@@ -137,7 +155,8 @@ export async function onRequest(context) {
       } else {
         xmlContent = '<?xml version="1.0" encoding="UTF-8"?>\n<item>\n</item>';
       }
-    } catch {
+    } catch (err) {
+      console.error(`XML file not found, creating new: ${err.message}`);
       xmlContent = '<?xml version="1.0" encoding="UTF-8"?>\n<item>\n</item>';
     }
 
@@ -156,7 +175,7 @@ export async function onRequest(context) {
       const endIdx = xmlContent.indexOf(endTag, startIdx) + endTag.length;
       xmlContent = xmlContent.substring(0, startIdx) + newTarget + xmlContent.substring(endIdx);
     } else {
-      xmlContent = xmlContent.replace('</item>', `  ${newTarget}\n</item>`);
+      xmlContent = xmlContent.replace('</item>', `  ${newTarget}\n</item>');
     }
 
     const xmlBase64 = toBase64(xmlContent);
@@ -170,7 +189,7 @@ export async function onRequest(context) {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   } catch (err) {
-    console.error(err.message);
+    console.error(`Upload error: ${err.message}`);
     return new Response(JSON.stringify({ error: err.message }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
