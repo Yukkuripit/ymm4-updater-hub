@@ -1,3 +1,4 @@
+// functions/api/upload.js
 export async function onRequest(context) {
   const corsHeaders = {
     'Access-Control-Allow-Origin': '*',
@@ -23,6 +24,7 @@ export async function onRequest(context) {
 
   // FormData 解析
   const formData = await context.request.formData();
+  const developerName = formData.get('developerName') || 'unknown';
   const pluginName = formData.get('pluginName');
   const version = formData.get('version');
   const description = formData.get('description') || '';
@@ -30,7 +32,7 @@ export async function onRequest(context) {
   const ymmFile = formData.get('ymmeFile');
 
   if (!pluginName || !version || !ymmFile) {
-    return new Response(JSON.stringify({ error: 'Missing fields' }), {
+    return new Response(JSON.stringify({ error: 'Missing required fields' }), {
       status: 400,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
@@ -48,53 +50,98 @@ export async function onRequest(context) {
     });
   }
 
-  // ヘルパー: GitHub にファイルをコミット
-  async function commitFile(path, contentBase64, commitMessage) {
-    // 既存ファイルのSHA取得
-    let sha = null;
-    const getRes = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/contents/${path}`, {
-      headers: { Authorization: `Bearer ${githubToken}` }
-    });
-    if (getRes.ok) {
-      const data = await getRes.json();
-      sha = data.sha;
+  // ヘルパー: 文字列を Base64 に変換 (Buffer 不使用)
+  function toBase64(str) {
+    return btoa(unescape(encodeURIComponent(str)));
+  }
+  function fromBase64(base64) {
+    return decodeURIComponent(escape(atob(base64)));
+  }
+
+  // ファイルを ArrayBuffer → Base64 に変換
+  async function fileToBase64(file) {
+    const buffer = await file.arrayBuffer();
+    const bytes = new Uint8Array(buffer);
+    let binary = '';
+    for (let i = 0; i < bytes.byteLength; i++) {
+      binary += String.fromCharCode(bytes[i]);
     }
-    const putRes = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/contents/${path}`, {
-      method: 'PUT',
-      headers: { Authorization: `Bearer ${githubToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: commitMessage,
-        content: contentBase64,
-        sha: sha,
-        branch: branch
-      })
-    });
-    if (!putRes.ok) throw new Error(`GitHub API error: ${await putRes.text()}`);
-    return await putRes.json();
+    return btoa(binary);
+  }
+
+  // GitHub API 呼び出し (User-Agent必須)
+  async function callGitHubAPI(url, method, body = null, sha = null) {
+    const headers = {
+      'Authorization': `Bearer ${githubToken}`,
+      'User-Agent': 'YMM4-AutoUpdater-Cloudflare',
+      'Accept': 'application/vnd.github.v3+json'
+    };
+    if (body) {
+      headers['Content-Type'] = 'application/json';
+    }
+    let finalUrl = url;
+    if (sha && method === 'PUT') {
+      // 既存ファイルのSHAが必要
+    }
+    const options = { method, headers };
+    if (body) options.body = JSON.stringify(body);
+    const res = await fetch(finalUrl, options);
+    if (!res.ok) {
+      const errorText = await res.text();
+      throw new Error(`GitHub API error ${res.status}: ${errorText}`);
+    }
+    return res.json();
+  }
+
+  // ファイルのSHAを取得
+  async function getFileSha(path) {
+    const url = `https://api.github.com/repos/${repoOwner}/${repoName}/contents/${path}`;
+    try {
+      const data = await callGitHubAPI(url, 'GET');
+      return data.sha;
+    } catch (err) {
+      // ファイルが存在しない場合は null
+      if (err.message.includes('404')) return null;
+      throw err;
+    }
+  }
+
+  // ファイルをコミット (作成または更新)
+  async function commitFile(path, contentBase64, commitMessage) {
+    const sha = await getFileSha(path);
+    const body = {
+      message: commitMessage,
+      content: contentBase64,
+      branch: branch
+    };
+    if (sha) body.sha = sha;
+    const url = `https://api.github.com/repos/${repoOwner}/${repoName}/contents/${path}`;
+    return await callGitHubAPI(url, 'PUT', body);
   }
 
   try {
-    // 1. ymmeファイルをアップロード
-    const fileBuffer = await ymmFile.arrayBuffer();
-    const fileBase64 = Buffer.from(fileBuffer).toString('base64');
-    const ymmPath = `plugins/${pluginName}_v${version}.ymme`;
-    const rawYmmUrl = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/${branch}/${ymmPath}`;
-    await commitFile(ymmPath, fileBase64, `Upload ${pluginName} v${version}`);
+    // 1. ymmeファイルをBase64変換
+    const fileBase64 = await fileToBase64(ymmFile);
+    const filePath = `plugins/${developerName}/${pluginName}_v${version}.ymme`;
+    const rawYmmUrl = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/${branch}/${filePath}`;
+    await commitFile(filePath, fileBase64, `Upload ${developerName}/${pluginName} v${version}`);
 
-    // 2. update.xml を更新
-    const xmlPath = 'update.xml';
+    // 2. update.xml を更新 (開発者ごと、プラグインごとにフォルダ分け)
+    const xmlPath = `updates/${developerName}/${pluginName}.xml`;
     let xmlContent = '';
-    const getXmlRes = await fetch(`https://api.github.com/repos/${repoOwner}/${repoName}/contents/${xmlPath}`, {
-      headers: { Authorization: `Bearer ${githubToken}` }
-    });
-    if (getXmlRes.ok) {
-      const data = await getXmlRes.json();
-      xmlContent = Buffer.from(data.content, 'base64').toString('utf-8');
-    } else {
+    try {
+      const sha = await getFileSha(xmlPath);
+      if (sha) {
+        const data = await callGitHubAPI(`https://api.github.com/repos/${repoOwner}/${repoName}/contents/${xmlPath}`, 'GET');
+        xmlContent = fromBase64(data.content);
+      } else {
+        xmlContent = '<?xml version="1.0" encoding="UTF-8"?>\n<item>\n</item>';
+      }
+    } catch {
       xmlContent = '<?xml version="1.0" encoding="UTF-8"?>\n<item>\n</item>';
     }
 
-    // XML パース（簡易テキスト置換）
+    // 簡易XMLテキスト置換 (同じnameのtargetを置換)
     const targetTag = `<target name="${pluginName}">`;
     const endTag = `</target>`;
     const newTarget = `<target name="${pluginName}">
@@ -112,15 +159,18 @@ export async function onRequest(context) {
       xmlContent = xmlContent.replace('</item>', `  ${newTarget}\n</item>`);
     }
 
-    const xmlBase64 = Buffer.from(xmlContent, 'utf-8').toString('base64');
+    const xmlBase64 = toBase64(xmlContent);
     await commitFile(xmlPath, xmlBase64, `Update ${pluginName} to v${version}`);
 
-    return new Response(JSON.stringify({ success: true, message: 'Plugin updated' }), {
+    // 公開用のURL (クライアントが参照するのはこのURL)
+    const publicXmlUrl = `https://raw.githubusercontent.com/${repoOwner}/${repoName}/${branch}/${xmlPath}`;
+
+    return new Response(JSON.stringify({ success: true, message: 'Plugin updated', xmlUrl: publicXmlUrl }), {
       status: 200,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     });
   } catch (err) {
-    console.error(err);
+    console.error(err.message);
     return new Response(JSON.stringify({ error: err.message }), {
       status: 500,
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
