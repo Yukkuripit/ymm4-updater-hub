@@ -6,7 +6,7 @@
     <title>YMM4プラグイン アップデート管理</title>
     <style>
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; margin: 2rem; background: #f5f5f5; }
-        .container { max-width: 600px; margin: 0 auto; background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .container { max-width: 700px; margin: 0 auto; background: white; padding: 2rem; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
         h1 { margin-top: 0; }
         .form-group { margin-bottom: 1rem; }
         label { display: block; font-weight: bold; margin-bottom: 0.25rem; }
@@ -29,7 +29,11 @@
             <input type="password" id="adminPassword" required placeholder="ADMIN_PASSWORD">
         </div>
         <div class="form-group">
-            <label>プラグイン名 (識別子)</label>
+            <label>開発者名 (任意・半角英数字)</label>
+            <input type="text" id="developerName" placeholder="例: YourName" value="default">
+        </div>
+        <div class="form-group">
+            <label>プラグイン識別名 (必須・半角英数字)</label>
             <input type="text" id="pluginName" required placeholder="例: MyChatPlugin">
         </div>
         <div class="form-group">
@@ -43,8 +47,8 @@
         <div class="form-group">
             <label>アップデート種別</label>
             <select id="force">
-                <option value="false">通常アップデート</option>
-                <option value="true">強制アップデート</option>
+                <option value="false">通常アップデート (任意)</option>
+                <option value="true">強制アップデート (必須)</option>
             </select>
         </div>
         <div class="form-group">
@@ -57,8 +61,9 @@
         </div>
         <div id="message"></div>
         <div class="note">
-            ※ アップロード後、GitHubリポジトリの update.xml と plugins/ フォルダが更新されます。<br>
-            ※ クライアントの UpdateConfig.cs は GitHub Raw URL を指すように設定してください。
+            ※ アップロード後、GitHubリポジトリの `updates/開発者名/プラグイン名.xml` と `plugins/開発者名/` 以下が更新されます。<br>
+            ※ クライアントの `UpdateConfig.cs` は GitHub Raw URL を指すように設定してください。<br>
+            ※ 開発者名はフォルダ分けに使われます。同一開発者内でプラグイン名がユニークになるようにしてください。
         </div>
     </form>
 </div>
@@ -66,22 +71,21 @@
     const form = document.getElementById('uploadForm');
     const msgDiv = document.getElementById('message');
     const submitBtn = document.getElementById('submitBtn');
-    const adminPasswordInput = document.getElementById('adminPassword');
 
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
-        const adminPassword = adminPasswordInput.value;
+        const adminPassword = document.getElementById('adminPassword').value;
         if (!adminPassword) {
             msgDiv.innerHTML = '<div class="error">管理者パスワードを入力してください</div>';
             return;
         }
 
-        // ボタンを無効化（連打防止）
         submitBtn.disabled = true;
         submitBtn.textContent = 'アップロード中...';
         msgDiv.innerHTML = '<div>アップロード中...</div>';
 
         const formData = new FormData();
+        formData.append('developerName', document.getElementById('developerName').value);
         formData.append('pluginName', document.getElementById('pluginName').value);
         formData.append('version', document.getElementById('version').value);
         formData.append('description', document.getElementById('description').value);
@@ -98,14 +102,13 @@
             if (res.ok) {
                 msgDiv.innerHTML = '<div class="success">✅ アップロード成功！ update.xml が更新されました。</div>';
                 form.reset();
-                adminPasswordInput.value = ''; // パスワードもクリア
+                document.getElementById('adminPassword').value = '';
             } else {
                 msgDiv.innerHTML = `<div class="error">エラー: ${data.error || '不明なエラー'}</div>`;
             }
         } catch (err) {
             msgDiv.innerHTML = `<div class="error">通信エラー: ${err.message}</div>`;
         } finally {
-            // ボタンを再有効化（成功・失敗どちらでも）
             submitBtn.disabled = false;
             submitBtn.textContent = '🚀 アップロードして反映';
         }
